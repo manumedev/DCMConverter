@@ -1,11 +1,13 @@
 # DICOM to JPEG Converter
 
-A Python tool that converts all DICOM files in a directory to JPEG format. Automatically creates a new folder for converted images under the same parent directory.
+A Python tool that converts all DICOM files in a directory to JPEG format. Automatically creates a new folder for converted images under the same parent directory. Optionally creates PDFs from the converted images with automatic size management.
 
 ## Features
 
 - **Directory Processing**: Designed to process entire directories of DICOM files
-- **JPEG Output Only**: All DICOMs converted to high-quality JPEG format
+- **JPEG Output**: All DICOMs converted to high-quality JPEG format
+- **PDF Creation**: Create PDFs from converted JPEG images with size management
+- **Automatic Size Management**: Splits PDFs when they exceed specified size limit (default: 512MB)
 - **Automatic Folder Creation**: Creates a new folder for converted images
 - **Multi-frame Handling**: Converts multi-frame DICOMs to JPEG (first frame)
 - **Robust Processing**: Handles various DICOM formats and pixel data types
@@ -52,6 +54,16 @@ python3 dcm_converter.py /medical/scans/ -q 90
 python3 dcm_converter.py image.dcm -o ./converted/
 ```
 
+#### Create PDFs from converted images:
+```bash
+python3 dcm_converter.py /dicom/files/ --pdf
+```
+
+#### Create PDFs with custom size limit:
+```bash
+python3 dcm_converter.py /dicom/files/ --pdf --pdf-size 256
+```
+
 #### Verbose output:
 ```bash
 python3 dcm_converter.py /dicom/files/ -v
@@ -69,6 +81,8 @@ python3 dcm_converter.py problematic_file.dcm --diagnose
 - `-q, --quality`: JPEG quality 1-100 (default: 95)
 - `-v, --verbose`: Enable verbose logging and show detailed file list
 - `--diagnose`: Diagnose DICOM file(s) for conversion issues without converting
+- `--pdf`: Create PDF files from converted JPEG images
+- `--pdf-size`: Maximum size per PDF file in MB (default: 512)
 
 ### Python API
 
@@ -78,16 +92,62 @@ from dcm_converter import DCMConverter
 # Initialize converter
 converter = DCMConverter(jpeg_quality=95)
 
-# Convert entire directory (primary use case)
+# Convert entire directory to JPEGs only
 results = converter.convert_directory('/path/to/dicom/files/', 'my_output_folder')
+
+# Convert to JPEGs and create PDFs
+jpeg_files, pdf_files = converter.convert_directory_with_pdf(
+    '/path/to/dicom/files/', 
+    'my_output_folder',
+    create_pdf=True,
+    pdf_max_size_mb=512
+)
 
 # Convert single file
 results = converter.convert_dicom('image.dcm', './output_directory/')
+
+# Create PDFs from existing JPEG files
+pdf_files = converter.create_pdfs_from_jpegs(
+    jpeg_file_list, 
+    './output_directory/', 
+    'my_document',
+    max_size_mb=256
+)
 ```
 
 ## Examples
 
-### Batch Processing (Primary Use Case)
+### Batch Processing with PDF Creation
+```bash
+$ python3 dcm_converter.py /medical/imaging/patient_001/ --pdf
+Processing DICOM files in directory: /medical/imaging/patient_001/
+Output folder: /medical/imaging/patient_001/converted_jpegs
+PDF creation enabled (max size: 512MB per PDF)
+2024-01-15 10:30:25 - DCMConverter - INFO - Found 24 DICOM files
+Converting DICOM files to JPEG: 100%|████████████| 24/24 [01:15<00:00,  3.1s/it]
+✓ Successfully converted 24 DICOM files to JPEG
+📷 All images saved in: /medical/imaging/patient_001/converted_jpegs/
+Creating PDFs from 24 JPEG files
+Creating PDFs: 100%|████████████| 24/24 [00:30<00:00,  1.2s/it]
+📄 Successfully created 1 PDF file(s):
+  📄 patient_001_images_part_001.pdf (423.2MB)
+```
+
+### Large Dataset with Multiple PDFs
+```bash
+$ python3 dcm_converter.py /radiology/ct_study_large/ --pdf --pdf-size 256
+Processing DICOM files in directory: /radiology/ct_study_large/
+PDF creation enabled (max size: 256MB per PDF)
+Converting DICOM files to JPEG: 100%|████████████| 156/156 [08:30<00:00,  3.3s/it]
+✓ Successfully converted 156 DICOM files to JPEG
+Creating PDFs: 100%|████████████| 156/156 [02:15<00:00,  1.1s/it]
+📄 Successfully created 3 PDF file(s):
+  📄 ct_study_large_images_part_001.pdf (255.8MB)
+  📄 ct_study_large_images_part_002.pdf (249.3MB)
+  📄 ct_study_large_images_part_003.pdf (187.6MB)
+```
+
+### Batch Processing (JPEG Only - Original Functionality)
 ```bash
 $ python3 dcm_converter.py /medical/imaging/patient_001/
 Processing DICOM files in directory: /medical/imaging/patient_001/
@@ -98,23 +158,6 @@ Converting DICOM files to JPEG: 100%|████████████| 24/24
 2024-01-15 10:31:40 - DCMConverter - INFO - Successfully converted 24 files
 ✓ Successfully converted 24 DICOM files to JPEG
 📷 All images saved in: /medical/imaging/patient_001/converted_jpegs/
-```
-
-### Custom Output Folder
-```bash
-$ python3 dcm_converter.py /radiology/studies/ct_scan/ -o jpeg_images
-Processing DICOM files in directory: /radiology/studies/ct_scan/
-Output folder: /radiology/studies/ct_scan/jpeg_images
-Converting DICOM files to JPEG: 100%|████████████| 156/156 [08:30<00:00,  3.3s/it]
-✓ Successfully converted 156 DICOM files to JPEG
-📷 All images saved in: /radiology/studies/ct_scan/jpeg_images/
-```
-
-### Single DICOM File
-```bash
-$ python3 dcm_converter.py chest_xray.dcm -o ./converted/
-Processing single DICOM file: chest_xray.dcm
-✓ Converted to JPEG: ./converted/chest_xray.jpg
 ```
 
 ## Directory Structure
@@ -134,7 +177,7 @@ patient_data/
     └── CHEST_LAT.dcm
 ```
 
-### After Conversion:
+### After Conversion (JPEG Only):
 ```
 patient_data/
 ├── converted_jpegs/          # ← New folder created automatically
@@ -156,6 +199,51 @@ patient_data/
     ├── CHEST_PA.dcm
     └── CHEST_LAT.dcm
 ```
+
+### After Conversion with PDF Creation:
+```
+patient_data/
+├── converted_jpegs/          # ← New folder created automatically
+│   ├── IM_001.jpg
+│   ├── IM_002.jpg
+│   ├── IM_003.jpg
+│   ├── CINE_001.jpg
+│   ├── CINE_002.jpg
+│   ├── CHEST_PA.jpg
+│   ├── CHEST_LAT.jpg
+│   ├── patient_data_images_part_001.pdf  # ← PDF files created automatically
+│   └── patient_data_images_part_002.pdf  # ← Split if size limit exceeded
+├── CT_CHEST/
+│   ├── IM_001.dcm           # Original files remain unchanged
+│   ├── IM_002.dcm
+│   └── IM_003.dcm
+├── CINE_HEART/
+│   ├── CINE_001.dcm
+│   └── CINE_002.dcm
+└── XRAY/
+    ├── CHEST_PA.dcm
+    └── CHEST_LAT.dcm
+```
+
+## PDF Features
+
+### **Automatic Size Management**
+- PDFs are automatically split when they exceed the specified size limit
+- Default limit: 512MB per PDF file
+- Customizable with `--pdf-size` option
+- Sequential naming: `_part_001.pdf`, `_part_002.pdf`, etc.
+
+### **Image Layout**
+- Each JPEG becomes one page in the PDF
+- Images are automatically scaled to fit A4 pages
+- Maintains aspect ratio with centered positioning
+- Includes filename as caption at bottom of each page
+- 0.5-inch margins for professional appearance
+
+### **PDF Naming Convention**
+- Format: `{directory_name}_images_part_{number}.pdf`
+- Example: `patient_001_images_part_001.pdf`
+- Sequential numbering for multiple PDFs from same dataset
 
 ## Multi-frame DICOM Handling
 

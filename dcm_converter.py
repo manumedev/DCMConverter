@@ -4,6 +4,7 @@ DICOM to JPEG Converter Tool
 
 Converts all DICOM files in a directory to JPEG format.
 Automatically creates a new folder for converted images.
+Optionally creates PDFs from the JPEG files with size management.
 """
 
 import os
@@ -17,6 +18,10 @@ from PIL import Image
 import pydicom
 from pydicom.pixel_data_handlers.util import apply_voi_lut
 from tqdm import tqdm
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.utils import ImageReader
+import tempfile
 
 
 class DCMConverter:
@@ -549,6 +554,187 @@ class DCMConverter:
             print(f"❌ Error reading DICOM file: {e}")
             return False
     
+    def create_pdfs_from_jpegs(self, jpeg_files: List[str], output_dir: Union[str, Path], 
+                               base_name: str = "converted_images", max_size_mb: int = 512) -> List[str]:
+        """
+        Create PDF files from JPEG images with size management.
+        
+        Args:
+            jpeg_files: List of JPEG file paths
+            output_dir: Output directory for PDFs
+            base_name: Base name for PDF files
+            max_size_mb: Maximum size per PDF in MB
+            
+        Returns:
+            List of created PDF file paths
+        """
+        if not jpeg_files:
+            self.logger.warning("No JPEG files provided for PDF creation")
+            return []
+        
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        max_size_bytes = max_size_mb * 1024 * 1024  # Convert MB to bytes
+        pdf_files = []
+        current_pdf_num = 1
+        current_pdf_path = None
+        current_pdf = None
+        current_size = 0
+        
+        self.logger.info(f"Creating PDFs from {len(jpeg_files)} JPEG files")
+        self.logger.info(f"Maximum PDF size: {max_size_mb}MB")
+        
+        try:
+            for i, jpeg_file in enumerate(tqdm(jpeg_files, desc="Creating PDFs")):
+                jpeg_path = Path(jpeg_file)
+                
+                if not jpeg_path.exists():
+                    self.logger.warning(f"JPEG file not found: {jpeg_path}")
+                    continue
+                
+                # Check file size before adding
+                jpeg_size = jpeg_path.stat().st_size
+                
+                # Create new PDF if needed (first iteration or size limit reached)
+                if current_pdf is None or (current_size + jpeg_size) > max_size_bytes:
+                    # Close current PDF if it exists
+                    if current_pdf is not None:
+                        current_pdf.save()
+                        self.logger.info(f"Completed PDF {current_pdf_num-1}: {current_pdf_path} ({current_size/1024/1024:.1f}MB)")
+                    
+                    # Create new PDF
+                    current_pdf_path = output_dir / f"{base_name}_part_{current_pdf_num:03d}.pdf"
+                    current_pdf = canvas.Canvas(str(current_pdf_path), pagesize=A4)
+                    current_size = 0
+                    pdf_files.append(str(current_pdf_path))
+                    current_pdf_num += 1
+                    
+                    self.logger.debug(f"Started new PDF: {current_pdf_path}")
+                
+                # Add image to current PDF
+                try:
+                    # Open image to get dimensions
+                    with Image.open(jpeg_path) as img:
+                        img_width, img_height = img.size
+                    
+                    # Calculate page dimensions
+                    page_width, page_height = A4
+                    margin = 36  # 0.5 inch margin
+                    available_width = page_width - 2 * margin
+                    available_height = page_height - 2 * margin
+                    
+                    # Calculate scaling to fit image on page
+                    scale_x = available_width / img_width
+                    scale_y = available_height / img_height
+                    scale = min(scale_x, scale_y)
+                    
+                    # Calculate centered position
+                    scaled_width = img_width * scale
+                    scaled_height = img_height * scale
+                    x = margin + (available_width - scaled_width) / 2
+                    y = margin + (available_height - scaled_height) / 2
+                    
+                    # Add image to PDF
+                    current_pdf.drawImage(
+                        str(jpeg_path),
+                        x, y,
+                        width=scaled_width,
+                        height=scaled_height,
+                        preserveAspectRatio=True
+                    )
+                    
+                    # Add filename as caption
+                    current_pdf.setFont("Helvetica", 8)
+                    current_pdf.drawString(margin, margin - 10, f"Source: {jpeg_path.name}")
+                    
+                    current_pdf.showPage()  # Move to next page
+                    current_size += jpeg_size
+                    
+                    self.logger.debug(f"Added {jpeg_path.name} to PDF ({jpeg_size/1024:.1f}KB)")
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to add {jpeg_path} to PDF: {e}")
+                    continue
+            
+            # Close final PDF
+            if current_pdf is not None:
+                current_pdf.save()
+                self.logger.info(f"Completed final PDF: {current_pdf_path} ({current_size/1024/1024:.1f}MB)")
+            
+            self.logger.info(f"Successfully created {len(pdf_files)} PDF file(s)")
+            return pdf_files
+            
+        except Exception as e:
+            self.logger.error(f"Error creating PDFs: {e}")
+            # Clean up any incomplete PDFs
+            if current_pdf is not None:
+                try:
+                    current_pdf.save()
+                except:
+                    pass
+            return pdf_files
+    
+    def _get_pdf_size_estimate(self, jpeg_path: Path) -> int:
+        """
+        Estimate the size contribution of a JPEG to a PDF.
+        
+        Args:
+            jpeg_path: Path to JPEG file
+            
+        Returns:
+            Estimated size in bytes
+        """
+        try:
+            # For estimation, use the JPEG file size plus some overhead
+            jpeg_size = jpeg_path.stat().st_size
+            # PDF overhead is typically 10-20% of image size
+            estimated_size = int(jpeg_size * 1.15)
+            return estimated_size
+        except Exception:
+            # Fallback estimate
+            return 1024 * 1024  # 1MB default
+    
+    def convert_directory_with_pdf(self, input_dir: Union[str, Path], 
+                                   output_folder_name: str = "converted_jpegs",
+                                   create_pdf: bool = True,
+                                   pdf_max_size_mb: int = 512) -> tuple[List[str], List[str]]:
+        """
+        Convert DICOM directory to JPEGs and optionally create PDFs.
+        
+        Args:
+            input_dir: Directory containing DICOM files
+            output_folder_name: Name of the output folder to create
+            create_pdf: Whether to create PDF files from JPEGs
+            pdf_max_size_mb: Maximum size per PDF in MB
+            
+        Returns:
+            Tuple of (jpeg_files, pdf_files) lists
+        """
+        # First convert DICOMs to JPEGs
+        jpeg_files = self.convert_directory(input_dir, output_folder_name)
+        
+        if not jpeg_files:
+            return [], []
+        
+        pdf_files = []
+        if create_pdf:
+            # Create PDFs from the JPEG files
+            input_path = Path(input_dir)
+            output_dir = input_path / output_folder_name
+            
+            # Sort JPEG files for consistent ordering
+            jpeg_files_sorted = sorted(jpeg_files)
+            
+            pdf_files = self.create_pdfs_from_jpegs(
+                jpeg_files_sorted, 
+                output_dir, 
+                f"{input_path.name}_images",
+                pdf_max_size_mb
+            )
+        
+        return jpeg_files, pdf_files
+    
     def convert_directory(self, input_dir: Union[str, Path], output_folder_name: str = "converted_jpegs") -> List[str]:
         """
         Convert all DICOM files in a directory to JPEGs.
@@ -608,7 +794,7 @@ class DCMConverter:
 def main():
     """Main command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Convert DICOM files in a directory to JPEG format",
+        description="Convert DICOM files in a directory to JPEG format and optionally create PDFs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -618,6 +804,8 @@ Examples:
   %(prog)s /data/dicoms/ -q 90            # Custom JPEG quality
   %(prog)s image.dcm -o ./converted/      # Convert single file
   %(prog)s image.dcm --diagnose           # Diagnose DICOM file issues
+  %(prog)s /data/dicoms/ --pdf            # Convert to JPEG and create PDFs
+  %(prog)s /data/dicoms/ --pdf --pdf-size 256  # Create PDFs with 256MB limit
         """
     )
     
@@ -653,6 +841,20 @@ Examples:
         help='Diagnose DICOM file(s) for conversion issues without converting'
     )
     
+    parser.add_argument(
+        '--pdf',
+        action='store_true',
+        help='Create PDF files from converted JPEG images'
+    )
+    
+    parser.add_argument(
+        '--pdf-size',
+        type=int,
+        default=512,
+        metavar='MB',
+        help='Maximum size per PDF file in MB (default: 512)'
+    )
+    
     args = parser.parse_args()
     
     # Setup logging level
@@ -670,7 +872,7 @@ Examples:
     
     try:
         if args.diagnose:
-            # Diagnostic mode
+            # Diagnostic mode (existing code unchanged)
             if input_path.is_file():
                 # Diagnose single file
                 print("🔍 DICOM Diagnostic Mode")
@@ -744,20 +946,54 @@ Examples:
             print(f"Processing DICOM files in directory: {input_path}")
             print(f"Output folder: {input_path}/{args.output}")
             
-            results = converter.convert_directory(input_path, args.output)
-            if results:
-                print(f"✓ Successfully converted {len(results)} DICOM files to JPEG")
-                print(f"📷 All images saved in: {input_path}/{args.output}/")
+            if args.pdf:
+                print(f"PDF creation enabled (max size: {args.pdf_size}MB per PDF)")
+                # Use the new method that creates both JPEGs and PDFs
+                jpeg_files, pdf_files = converter.convert_directory_with_pdf(
+                    input_path, 
+                    args.output, 
+                    create_pdf=True,
+                    pdf_max_size_mb=args.pdf_size
+                )
+                
+                if jpeg_files:
+                    print(f"✓ Successfully converted {len(jpeg_files)} DICOM files to JPEG")
+                    print(f"📷 All images saved in: {input_path}/{args.output}/")
                     
-                if args.verbose:
-                    print("\nConverted files:")
-                    for result in results:
-                        print(f"  {result}")
+                    if pdf_files:
+                        print(f"📄 Successfully created {len(pdf_files)} PDF file(s):")
+                        for pdf_file in pdf_files:
+                            pdf_path = Path(pdf_file)
+                            size_mb = pdf_path.stat().st_size / 1024 / 1024
+                            print(f"  📄 {pdf_path.name} ({size_mb:.1f}MB)")
+                    else:
+                        print("⚠️  No PDF files were created")
+                        
+                    if args.verbose:
+                        print(f"\nConverted JPEG files:")
+                        for result in jpeg_files:
+                            print(f"  {result}")
+                else:
+                    print("✗ No files were converted successfully")
+                    print("  Make sure the directory contains valid DICOM files with pixel data")
+                    print("  Run with --diagnose to identify issues: python3 dcm_converter.py /path/to/dir/ --diagnose")
+                    sys.exit(1)
             else:
-                print("✗ No files were converted successfully")
-                print("  Make sure the directory contains valid DICOM files with pixel data")
-                print("  Run with --diagnose to identify issues: python3 dcm_converter.py /path/to/dir/ --diagnose")
-                sys.exit(1)
+                # JPEG only conversion (existing behavior)
+                results = converter.convert_directory(input_path, args.output)
+                if results:
+                    print(f"✓ Successfully converted {len(results)} DICOM files to JPEG")
+                    print(f"📷 All images saved in: {input_path}/{args.output}/")
+                        
+                    if args.verbose:
+                        print("\nConverted files:")
+                        for result in results:
+                            print(f"  {result}")
+                else:
+                    print("✗ No files were converted successfully")
+                    print("  Make sure the directory contains valid DICOM files with pixel data")
+                    print("  Run with --diagnose to identify issues: python3 dcm_converter.py /path/to/dir/ --diagnose")
+                    sys.exit(1)
                 
         elif input_path.is_file():
             # Convert single file (fallback option)
@@ -772,6 +1008,22 @@ Examples:
             results = converter.convert_dicom(input_path, output_dir)
             if results:
                 print(f"✓ Converted to JPEG: {results[0]}")
+                
+                if args.pdf:
+                    print(f"Creating PDF from JPEG (max size: {args.pdf_size}MB)")
+                    pdf_files = converter.create_pdfs_from_jpegs(
+                        results, 
+                        output_dir, 
+                        input_path.stem,
+                        args.pdf_size
+                    )
+                    if pdf_files:
+                        for pdf_file in pdf_files:
+                            pdf_path = Path(pdf_file)
+                            size_mb = pdf_path.stat().st_size / 1024 / 1024
+                            print(f"📄 Created PDF: {pdf_path.name} ({size_mb:.1f}MB)")
+                    else:
+                        print("⚠️  PDF creation failed")
             else:
                 print("✗ Conversion failed")
                 print("  Make sure the file is a valid DICOM with pixel data")

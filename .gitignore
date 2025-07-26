@@ -139,6 +139,7 @@ sample_data/
 *.jpg
 *.jpeg
 *.gif
+*.pdf
 
 # macOS
 .DS_Store
